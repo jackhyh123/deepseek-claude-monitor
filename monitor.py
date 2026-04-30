@@ -342,6 +342,7 @@ class DeepSeekBar(rumps.App):
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("🌐 打开仪表盘", callback=self._open_dashboard))
         self.menu.add(rumps.MenuItem("🔄 刷新余额", callback=lambda _: threading.Thread(target=fetch_balance, daemon=True).start()))
+        self.menu.add(rumps.MenuItem("💎 DeepSeek 充值", callback=lambda _: webbrowser.open("https://platform.deepseek.com/top_up")))
         self.menu.add(rumps.separator)
         self.menu.add(rumps.MenuItem("退出", callback=lambda _: rumps.quit_application()))
 
