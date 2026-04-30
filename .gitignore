@@ -1,0 +1,30 @@
+# DeepSeek Monitor — gitignore
+
+# Database (contains personal usage data)
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated icon files
+ds_icon.iconset/
+ds_icon.icns
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual env
+venv/
+.venv/
+
+# Logs
+*.log
