@@ -237,8 +237,10 @@ def _load_api_key() -> str:
 def fetch_balance():
     key = _load_api_key()
     if not key:
+        # Keep last known balance if we previously had one
         with bal_state.lock:
-            bal_state.balance = "(未找到 API Key)"
+            if not bal_state.balance.startswith("¥"):
+                bal_state.balance = "(未找到 API Key)"
         return
 
     try:
@@ -260,11 +262,11 @@ def fetch_balance():
                 with bal_state.lock:
                     bal_state.balance = f"¥? ({json.dumps(data)[:80]})"
         else:
-            with bal_state.lock:
-                bal_state.balance = f"(HTTP {r.status_code})"
-    except Exception as e:
-        with bal_state.lock:
-            bal_state.balance = f"(网络: {str(e)[:40]})"
+            # Keep last known balance on HTTP error
+            pass
+    except Exception:
+        # Keep last known balance on network error
+        pass
 
 
 # ── Dashboard HTTP Server ────────────────────────────────
