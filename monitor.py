@@ -31,12 +31,16 @@ BALANCE_INTERVAL = 300
 TAIL_INTERVAL = 5
 
 PRICING = {
-    "deepseek-chat":     (1, 2),
-    "deepseek-reasoner": (4, 16),
+    # DeepSeek official pricing per 1M tokens (CNY), April 2026 update
+    # https://api-docs.deepseek.com/quick_start/pricing
+    "deepseek-chat":     (1, 2),     # V3
+    "deepseek-reasoner": (4, 16),    # R1
     "deepseek-v3":       (1, 2),
     "deepseek-r1":       (4, 16),
-    "deepseek-v4-pro":   (1, 2),
+    "deepseek-v4-pro":   (3, 6),     # V4 flagship (降价后)
+    "deepseek-v4-flash": (1, 2),     # V4 lightweight
 }
+DEFAULT_PRICING = (1, 2)
 
 # ── Database ─────────────────────────────────────────────
 def init_db():
@@ -96,14 +100,14 @@ def get_stats():
     for model, p, c in conn.execute(
             "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM requests WHERE date(timestamp)=? GROUP BY model",
             (today,)).fetchall():
-        pr = PRICING.get(model, (1, 2))
+        pr = PRICING.get(model, DEFAULT_PRICING)
         cost_today += (p / 1_000_000) * pr[0] + (c / 1_000_000) * pr[1]
 
     cost_month = 0.0
     for model, p, c in conn.execute(
             "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM requests WHERE strftime('%Y-%m', timestamp)=? GROUP BY model",
             (m,)).fetchall():
-        pr = PRICING.get(model, (1, 2))
+        pr = PRICING.get(model, DEFAULT_PRICING)
         cost_month += (p / 1_000_000) * pr[0] + (c / 1_000_000) * pr[1]
 
     recent = conn.execute(
