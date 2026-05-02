@@ -385,19 +385,19 @@ class DeepSeekBar(rumps.App):
             with bal_state.lock:
                 bal = bal_state.balance
 
-            # Parse balance number: "¥100.00 (充值¥90 + 赠送¥10)" -> "100.00"
-            bal_short = ""
+            # Parse balance number: "¥100.00 (充值¥90 + 赠送¥10)" -> float
+            bal_num = 0.0
             if bal.startswith("¥"):
-                # Extract just the first number
-                parts = bal[1:].split()
-                if parts:
-                    bal_short = parts[0]
+                try:
+                    bal_num = float(bal[1:].split()[0])
+                except ValueError:
+                    pass
 
-            # Menu bar title: cost + balance
-            if bal_short:
-                self.title = f"DS ¥{cost:.2f} | ¥{bal_short}"
+            # Only show balance in menu bar when < ¥5
+            if bal_num > 0 and bal_num < 5:
+                self.title = f"DS ¥{cost:.2f} | ¥{bal_num:.2f}"
             else:
-                self.title = f"DS ¥{cost:.4f}" if cost > 0 else "DS ¥0"
+                self.title = f"DS ¥{cost:.2f}" if cost > 0 else "DS ¥0"
 
             self._req_item.title = f"今日请求: {t['requests']} 次"
             self._tok_item.title = f"今日 Token: {t['total']:,}  (入 {t['prompt']:,} / 出 {t['completion']:,})"
