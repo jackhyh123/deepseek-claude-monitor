@@ -32,15 +32,17 @@ TAIL_INTERVAL = 5
 
 PRICING = {
     # DeepSeek official pricing per 1M tokens (CNY), April 2026 update
-    # https://api-docs.deepseek.com/quick_start/pricing
-    "deepseek-chat":     (1, 2),     # V3
-    "deepseek-reasoner": (4, 16),    # R1
-    "deepseek-v3":       (1, 2),
-    "deepseek-r1":       (4, 16),
-    "deepseek-v4-pro":   (3, 6),     # V4 flagship (降价后)
-    "deepseek-v4-flash": (1, 2),     # V4 lightweight
+    # (cache_miss_input, cache_hit_input, output)
+    # cache_miss = non-cached input tokens
+    # cache_hit  = cached/read input tokens (heavily discounted)
+    "deepseek-chat":     (1,    0.1,   2),     # V3
+    "deepseek-reasoner": (4,    0.4,   16),    # R1
+    "deepseek-v3":       (1,    0.1,   2),
+    "deepseek-r1":       (4,    0.4,   16),
+    "deepseek-v4-pro":   (3,    0.025, 6),     # V4 flagship (2.5折限时缓存价至5/5)
+    "deepseek-v4-flash": (1,    0.02,  2),     # V4 lightweight
 }
-DEFAULT_PRICING = (1, 2)
+DEFAULT_PRICING = (1, 0.1, 2)
 
 # ── Database ─────────────────────────────────────────────
 def init_db():
@@ -52,29 +54,35 @@ def init_db():
         model TEXT,
         prompt_tokens INTEGER DEFAULT 0,
         completion_tokens INTEGER DEFAULT 0,
+        cache_read_tokens INTEGER DEFAULT 0,
+        cache_creation_tokens INTEGER DEFAULT 0,
         total_tokens INTEGER DEFAULT 0,
         msg_uuid TEXT UNIQUE
     )""")
-    # Migration: add msg_uuid if missing
-    try:
-        conn.execute("SELECT msg_uuid FROM requests LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE requests ADD COLUMN msg_uuid TEXT")
+    # Migrations
+    for col in ["msg_uuid", "cache_read_tokens", "cache_creation_tokens"]:
+        try:
+            conn.execute(f"SELECT {col} FROM requests LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE requests ADD COLUMN {col} TEXT" if col == "msg_uuid" else f"ALTER TABLE requests ADD COLUMN {col} INTEGER DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ts ON requests(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg ON requests(msg_uuid)")
     conn.commit()
     conn.close()
 
 
-def save_usage(model, prompt_tokens, completion_tokens, msg_uuid):
+def save_usage(model, prompt_tokens, completion_tokens, cache_read=0, cache_creation=0, msg_uuid=""):
     if not msg_uuid:
         return False
     conn = sqlite3.connect(DB_PATH)
     try:
+        # Total input = new prompt tokens + cached tokens (both read and creation)
+        total_input = prompt_tokens + cache_read + cache_creation
         conn.execute(
-            "INSERT OR IGNORE INTO requests (timestamp, model, prompt_tokens, completion_tokens, total_tokens, msg_uuid) VALUES (?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO requests (timestamp, model, prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, total_tokens, msg_uuid) VALUES (?,?,?,?,?,?,?,?)",
             (datetime.now().isoformat(), model, prompt_tokens, completion_tokens,
-             prompt_tokens + completion_tokens, msg_uuid))
+             cache_read, cache_creation,
+             total_input + completion_tokens, msg_uuid))
         conn.commit()
         inserted = conn.total_changes > 0
         conn.close()
@@ -97,18 +105,23 @@ def get_stats():
         (m,)).fetchone()
 
     cost_today = 0.0
-    for model, p, c in conn.execute(
-            "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM requests WHERE date(timestamp)=? GROUP BY model",
+    for model, p, c, cr, cc in conn.execute(
+            "SELECT model, SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens) FROM requests WHERE date(timestamp)=? GROUP BY model",
             (today,)).fetchall():
         pr = PRICING.get(model, DEFAULT_PRICING)
-        cost_today += (p / 1_000_000) * pr[0] + (c / 1_000_000) * pr[1]
+        # prompt_tokens = cache-miss input; cache_read = cache-hit input; cache_creation = also miss-priced
+        cost_today += ((p + (cc or 0)) / 1_000_000) * pr[0]  # cache miss price
+        cost_today += ((cr or 0) / 1_000_000) * pr[1]          # cache hit price
+        cost_today += ((c or 0) / 1_000_000) * pr[2]            # output price
 
     cost_month = 0.0
-    for model, p, c in conn.execute(
-            "SELECT model, SUM(prompt_tokens), SUM(completion_tokens) FROM requests WHERE strftime('%Y-%m', timestamp)=? GROUP BY model",
+    for model, p, c, cr, cc in conn.execute(
+            "SELECT model, SUM(prompt_tokens), SUM(completion_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens) FROM requests WHERE strftime('%Y-%m', timestamp)=? GROUP BY model",
             (m,)).fetchall():
         pr = PRICING.get(model, DEFAULT_PRICING)
-        cost_month += (p / 1_000_000) * pr[0] + (c / 1_000_000) * pr[1]
+        cost_month += ((p + (cc or 0)) / 1_000_000) * pr[0]
+        cost_month += ((cr or 0) / 1_000_000) * pr[1]
+        cost_month += ((c or 0) / 1_000_000) * pr[2]
 
     recent = conn.execute(
         "SELECT timestamp, model, prompt_tokens, completion_tokens, total_tokens FROM requests ORDER BY id DESC LIMIT 20"
@@ -190,13 +203,15 @@ def tail_jsonl() -> int:
 
             input_tokens = usage.get("input_tokens", 0)
             output_tokens = usage.get("output_tokens", 0)
-            if input_tokens == 0 and output_tokens == 0:
+            cache_read = usage.get("cache_read_input_tokens", 0)
+            cache_creation = usage.get("cache_creation_input_tokens", 0)
+            if input_tokens == 0 and output_tokens == 0 and cache_read == 0:
                 continue
 
             model = msg.get("model", "unknown")
             msg_id = msg.get("id", entry.get("uuid", ""))
 
-            if save_usage(model, input_tokens, output_tokens, msg_id):
+            if save_usage(model, input_tokens, output_tokens, cache_read, cache_creation, msg_id):
                 new_count += 1
 
     return new_count
